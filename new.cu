@@ -2,21 +2,18 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <cuda.h>
-#include "sha256.cuh"
 #include <sys/time.h>
-#include "channels.c"
+#include <pthread.h>
+#include "sha256.cuh"
 
 #define TEXT "Tanmay Bakshi"
 #define TEXT_LEN 13
-#define BLOCKS 5000
-#define BLOCK_SIZE 50000
+#define BLOCK_SIZE 400000
 #define GPUS 4
-#define THREADS 384 / GPUS
-#define DIFFICULTY 3
+#define DIFFICULTY 4
 #define RANDOM_LEN 20
 
-__constant__ BYTE dev_characterSet[63];
-BYTE characterSet[63] = {"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"};
+__constant__ BYTE characterSet[63] = {"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"};
 
 __global__ void sha256_cuda(BYTE *prefix, BYTE *randoms, BYTE *solves) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -33,23 +30,41 @@ __global__ void sha256_cuda(BYTE *prefix, BYTE *randoms, BYTE *solves) {
                 return;
             }
         }
-        if ((digest[3] & 0xF0) > 0) {
+/*        if ((digest[4] & 0xC0) > 0) {
             solves[i] = 0;
             return;
-        }
+        }*/
         solves[i] = 1;
     }
 }
 
-void pre_sha256() {
-    cudaMemcpyToSymbol(dev_characterSet, characterSet, sizeof(characterSet), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(dev_k, host_k, sizeof(host_k), 0, cudaMemcpyHostToDevice);
+__device__ void deviceRandomGen(unsigned long *x) {
+    *x ^= (*x << 21);
+    *x ^= (*x >> 35);
+    *x ^= (*x << 4);
 }
 
-void runHashCheck(BYTE *prefix, BYTE *randoms, BYTE *solves) {
-    int blockSize = 4;
-    int numBlocks = (BLOCK_SIZE + blockSize - 1) / blockSize;
-    sha256_cuda<<<numBlocks, blockSize>>>(prefix, randoms, solves);
+void hostRandomGen(unsigned long *x) {
+    *x ^= (*x << 21);
+    *x ^= (*x >> 35);
+    *x ^= (*x << 4);
+}
+
+__global__ void generateStrings(BYTE *block, unsigned long baseSeed) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < BLOCK_SIZE) {
+        unsigned long seed = baseSeed;
+        seed += (unsigned long) i;
+        for (int j = 0; j < RANDOM_LEN; j++) {
+            deviceRandomGen(&seed);
+            int randomIdx = (int) (seed % 62);
+            (block + i * RANDOM_LEN)[j] = characterSet[randomIdx];
+        }
+    }
+}
+
+void pre_sha256() {
+    cudaMemcpyToSymbol(dev_k, host_k, sizeof(host_k), 0, cudaMemcpyHostToDevice);
 }
 
 long long timems() {
@@ -58,41 +73,8 @@ long long timems() {
     return end.tv_sec * 1000LL + end.tv_usec / 1000;
 }
 
-unsigned long generateRandomNumber(unsigned long x) {
-    x ^= (x << 21);
-    x ^= (x >> 35);
-    x ^= (x << 4);
-    return x;
-}
-
-void insertRandomString(BYTE *buffer, int randomLength, unsigned long *rngSeed) {
-    for (int i = 0; i < randomLength; i++) {
-        *rngSeed = generateRandomNumber(*rngSeed);
-        buffer[i] = characterSet[(int) (*rngSeed % 62)];
-    }
-}
-
-struct RandomWorkerInput {
-    unsigned long rng;
-    BYTE **blocks;
-    Channel *blockCreationChannel;
-    Channel *blockUsageChannel;
-};
-typedef struct RandomWorkerInput RandomWorkerInput;
-
-void *randomWorker(void *vargp) {
-    RandomWorkerInput *rwi = (RandomWorkerInput *) vargp;
-    while (1) {
-        int freshBlockIdx = readFromChannel(rwi->blockUsageChannel);
-        insertRandomString(rwi->blocks[freshBlockIdx], BLOCK_SIZE * RANDOM_LEN, &rwi->rng);
-        writeToChannel(rwi->blockCreationChannel, freshBlockIdx);
-    }
-    return NULL;
-}
-
 struct HandlerInput {
     int device;
-    unsigned long rng;
     unsigned long hashesProcessed;
 };
 typedef struct HandlerInput HandlerInput;
@@ -108,55 +90,41 @@ void *launchGPUHandlerThread(void *vargp) {
     pre_sha256();
 
     BYTE cpuPrefix[] = {TEXT};
-    BYTE *cudaPrefix;
-    cudaMalloc(&cudaPrefix, TEXT_LEN);
-    cudaMemcpy(cudaPrefix, cpuPrefix, TEXT_LEN, cudaMemcpyHostToDevice);
+    BYTE *d_prefix;
+    cudaMalloc(&d_prefix, TEXT_LEN);
+    cudaMemcpy(d_prefix, cpuPrefix, TEXT_LEN, cudaMemcpyHostToDevice);
 
-    BYTE **blocks = (BYTE **) malloc(sizeof(BYTE *) * BLOCKS);
-    for (int i = 0; i < BLOCKS; i++) {
-        blocks[i] = (BYTE *) malloc(sizeof(BYTE) * BLOCK_SIZE * RANDOM_LEN);
-    }
+    BYTE *rndBlock = (BYTE *) calloc(sizeof(BYTE), BLOCK_SIZE * RANDOM_LEN);
+    BYTE *d_rndBlock;
+    cudaMalloc(&d_rndBlock, sizeof(BYTE) * BLOCK_SIZE * RANDOM_LEN);
 
-    Channel *blockCreationChannel = createChannel(BLOCKS);
-    Channel *blockUsageChannel = createChannel(BLOCKS);
+    BYTE *solves = (BYTE *) calloc(sizeof(BYTE), BLOCK_SIZE);
+    BYTE *d_solves;
+    cudaMalloc(&d_solves, sizeof(BYTE) * BLOCK_SIZE);
 
-    for (int i = 0; i < THREADS; i++) {
-        RandomWorkerInput *input = (RandomWorkerInput *) malloc(sizeof(RandomWorkerInput));
-        hi->rng = generateRandomNumber(hi->rng);
-        input->rng = hi->rng;
-        input->blocks = blocks;
-        input->blockCreationChannel = blockCreationChannel;
-        input->blockUsageChannel = blockUsageChannel;
-        pthread_t tid;
-        pthread_create(&tid, NULL, randomWorker, (void *) input);
-    }
-
-    for (int i = 0; i < BLOCKS; i++) {
-        writeToChannel(blockUsageChannel, i);
-    }
-
-    BYTE *solves;
-    cudaMallocManaged(&solves, BLOCK_SIZE);
-
-    BYTE *deviceBlock;
-    cudaMallocManaged(&deviceBlock, BLOCK_SIZE * RANDOM_LEN);
+    unsigned long rngSeed = timems();
+    hostRandomGen(&rngSeed);
 
     while (1) {
-        hi->hashesProcessed += BLOCK_SIZE;
-        int freshBlockIdx = readFromChannel(blockCreationChannel);
-        BYTE *block = blocks[freshBlockIdx];
-        cudaMemcpy(deviceBlock, block, BLOCK_SIZE * RANDOM_LEN, cudaMemcpyHostToDevice);
-        runHashCheck(cudaPrefix, deviceBlock, solves);
+        generateStrings<<<BLOCK_SIZE / 256, 256>>>(d_rndBlock, rngSeed);
+        hostRandomGen(&rngSeed);
         cudaDeviceSynchronize();
+
+        hi->hashesProcessed += BLOCK_SIZE;
+        sha256_cuda<<<BLOCK_SIZE / 256, 256>>>(d_prefix, d_rndBlock, d_solves);
+        cudaDeviceSynchronize();
+
+        cudaMemcpy(rndBlock, d_rndBlock, sizeof(BYTE) * BLOCK_SIZE * RANDOM_LEN, cudaMemcpyDeviceToHost);
+        cudaMemcpy(solves, d_solves, sizeof(BYTE) * BLOCK_SIZE, cudaMemcpyDeviceToHost);
+
         for (int i = 0; i < BLOCK_SIZE; i++) {
             if (solves[i] == 1) {
                 pthread_mutex_lock(&provideSolutionLock);
-                solution = block + i * RANDOM_LEN;
+                solution = rndBlock + i * RANDOM_LEN;
                 pthread_mutex_unlock(&solutionLock);
                 goto finish;
             }
         }
-        writeToChannel(blockUsageChannel, freshBlockIdx);
     }
 
 finish:
@@ -175,7 +143,6 @@ int main() {
     for (int i = 0; i < GPUS; i++) {
         HandlerInput *hi = (HandlerInput *) malloc(sizeof(HandlerInput));
         hi->device = i;
-        hi->rng = time(NULL);
         hi->hashesProcessed = 0;
         processedPtrs[i] = &hi->hashesProcessed;
         pthread_t tid;
