@@ -9,9 +9,9 @@
 
 #define TEXT "Tanmay Bakshi"
 #define TEXT_LEN 13
-#define BLOCK_SIZE 400000
+#define BLOCK_SIZE 800000
 #define GPUS 4
-#define DIFFICULTY 5
+#define DIFFICULTY 4
 #define RANDOM_LEN 20
 
 __constant__ BYTE characterSet[63] = {"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"};
@@ -43,11 +43,11 @@ __global__ void sha256_cuda(BYTE *prefix, BYTE *solution, int *blockContainsSolu
         sha256_update(&ctx, prefix, TEXT_LEN);
         sha256_update(&ctx, random, RANDOM_LEN);
         sha256_final(&ctx, digest);
-        for (int j = 0; j < DIFFICULTY; j++) {
-            if (digest[j] > 0) {
+        for (int j = 0; j < DIFFICULTY; j++)
+            if (digest[j] > 0)
                 return;
-            }
-        }
+        if ((digest[DIFFICULTY] & 0xF0) > 0)
+            return;
         if (*blockContainsSolution == 1)
             return;
         *blockContainsSolution = 1;
