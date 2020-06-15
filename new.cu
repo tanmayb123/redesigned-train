@@ -9,9 +9,9 @@
 
 #define TEXT "Tanmay Bakshi"
 #define TEXT_LEN 13
-#define BLOCK_SIZE 800000
+#define BLOCK_SIZE 400000
 #define GPUS 4
-#define DIFFICULTY 4
+#define DIFFICULTY 3
 #define RANDOM_LEN 20
 
 __constant__ BYTE characterSet[63] = {"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"};
@@ -46,8 +46,8 @@ __global__ void sha256_cuda(BYTE *prefix, BYTE *solution, int *blockContainsSolu
         for (int j = 0; j < DIFFICULTY; j++)
             if (digest[j] > 0)
                 return;
-        if ((digest[DIFFICULTY] & 0xF0) > 0)
-            return;
+//        if ((digest[DIFFICULTY] & 0xF0) > 0)
+//            return;
         if (*blockContainsSolution == 1)
             return;
         *blockContainsSolution = 1;
@@ -110,7 +110,9 @@ void *launchGPUHandlerThread(void *vargp) {
         hostRandomGen(&rngSeed);
 
         hi->hashesProcessed += BLOCK_SIZE;
+        pthread_mutex_lock(&provideSolutionLock);
         sha256_cuda<<<BLOCK_SIZE / 256, 256>>>(d_prefix, d_solution, d_blockContainsSolution, rngSeed);
+        pthread_mutex_unlock(&provideSolutionLock);
         cudaDeviceSynchronize();
 
         cudaMemcpy(blockContainsSolution, d_blockContainsSolution, sizeof(int), cudaMemcpyDeviceToHost);
@@ -158,8 +160,6 @@ int main() {
     printf("Hashes processed: %'lu\n", totalProcessed);
     printf("Time: %llu\n", elapsed);
     printf("Hashes/sec: %'lu\n", (unsigned long) ((double) totalProcessed / (double) elapsed) * 1000);
-
-    cudaDeviceReset();
 
     return 0;
 }
