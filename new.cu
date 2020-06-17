@@ -9,7 +9,8 @@
 
 #define TEXT "Tanmay Bakshi"
 #define TEXT_LEN 13
-#define BLOCK_SIZE 400000
+#define THREADS 1500
+#define BLOCKS 256
 #define GPUS 4
 #define DIFFICULTY 4
 #define RANDOM_LEN 20
@@ -46,7 +47,7 @@ __global__ void sha256_cuda(BYTE *prefix, BYTE *solution, int *blockContainsSolu
     for (int j = 0; j < DIFFICULTY; j++)
         if (digest[j] > 0)
             return;
-    if ((digest[DIFFICULTY] & 0xFC) > 0)
+    if ((digest[DIFFICULTY] & 0xF0) > 0)
         return;
     if (*blockContainsSolution == 1)
         return;
@@ -106,8 +107,8 @@ void *launchGPUHandlerThread(void *vargp) {
     while (1) {
         hostRandomGen(&rngSeed);
 
-        hi->hashesProcessed += BLOCK_SIZE;
-        sha256_cuda<<<BLOCK_SIZE / 256, 256>>>(d_prefix, d_solution, d_blockContainsSolution, rngSeed);
+        hi->hashesProcessed += THREADS * BLOCKS;
+        sha256_cuda<<<THREADS, BLOCKS>>>(d_prefix, d_solution, d_blockContainsSolution, rngSeed);
         cudaDeviceSynchronize();
 
         cudaMemcpy(blockContainsSolution, d_blockContainsSolution, sizeof(int), cudaMemcpyDeviceToHost);
