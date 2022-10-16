@@ -66,10 +66,10 @@ void pre_sha256() {
     cudaMemcpyToSymbol(dev_k, host_k, sizeof(host_k), 0, cudaMemcpyHostToDevice);
 }
 
-long long timems() {
+unsigned long long timems() {
     struct timeval end;
     gettimeofday(&end, NULL);
-    return end.tv_sec * 1000LL + end.tv_usec / 1000;
+    return end.tv_sec * 1000000LL + end.tv_usec;
 }
 
 struct HandlerInput {
@@ -100,7 +100,7 @@ void *launchGPUHandlerThread(void *vargp) {
     int *d_blockContainsSolution;
     cudaMalloc(&d_blockContainsSolution, sizeof(int));
 
-    unsigned long rngSeed = timems();
+    unsigned long long rngSeed = timems();
 
     initSolutionMemory<<<1, 1>>>(d_blockContainsSolution);
 
@@ -136,7 +136,7 @@ int main() {
 
     unsigned long **processedPtrs = (unsigned long **) malloc(sizeof(unsigned long *) * GPUS);
     pthread_t *tids = (pthread_t *) malloc(sizeof(pthread_t) * GPUS);
-    long long start = timems();
+    unsigned long long start = timems();
     for (int i = 0; i < GPUS; i++) {
         HandlerInput *hi = (HandlerInput *) malloc(sizeof(HandlerInput));
         hi->device = i;
@@ -151,8 +151,8 @@ int main() {
         for (int i = 0; i < GPUS; i++) {
             totalProcessed += *(processedPtrs[i]);
         }
-        long long elapsed = timems() - start;
-        printf("Hashes (%'lu) Seconds (%'f) Hashes/sec (%'lu)\r", totalProcessed, ((float) elapsed) / 1000.0, (unsigned long) ((double) totalProcessed / (double) elapsed) * 1000);
+        unsigned long long elapsed = timems() - start;
+        printf("Hashes (%'lu) Seconds (%'f) Hashes/sec (%'lu)\r", totalProcessed, ((float) elapsed) / 1000000.0, (unsigned long) ((double) totalProcessed / (double) elapsed) * 1000000);
         if (solution) {
             break;
         }
@@ -160,8 +160,8 @@ int main() {
     printf("\n");
 
     pthread_mutex_lock(&solutionLock);
-    long long end = timems();
-    long long elapsed = end - start;
+    unsigned long long end = timems();
+    unsigned long long elapsed = end - start;
 
     for (int i = 0; i < GPUS; i++) {
         pthread_join(tids[i], NULL);
