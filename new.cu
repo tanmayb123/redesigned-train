@@ -69,7 +69,7 @@ void pre_sha256() {
 long long timems() {
     struct timeval end;
     gettimeofday(&end, NULL);
-    return end.tv_sec * 1000LL + end.tv_usec / 1000;
+    return end.tv_sec * 1000000LL + end.tv_usec;
 }
 
 struct HandlerInput {
@@ -100,7 +100,7 @@ void *launchGPUHandlerThread(void *vargp) {
     int *d_blockContainsSolution;
     cudaMalloc(&d_blockContainsSolution, sizeof(int));
 
-    unsigned long rngSeed = timems();
+    unsigned long long rngSeed = timems();
 
     initSolutionMemory<<<1, 1>>>(d_blockContainsSolution);
 
